@@ -1,7 +1,13 @@
+import os
+import io
 import asyncio
+
 import torch
 import torch.nn as nn
+import torch.multiprocessing as mp
 import torch.optim.lr_scheduler as lr_scheduler
+
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime
 from typing import List, Tuple, Dict
 from ml.model import PyTorchModel, create_mobilenet
@@ -9,6 +15,16 @@ from ml.training import evaluate_model
 from utils.skyfield_utils import EarthSatellite
 from utils.logging_setup import KST
 from config import LOCAL_EPOCHS, IOT_FLYOVER_THRESHOLD_DEG
+from minimum_test.environment_minimum import IoT, GroundStation
+
+# --------------------------------------------------------------------------
+# 전역 프로세스 풀
+# --------------------------------------------------------------------------
+_MP_CTX = mp.get_context("spawn")
+POOL = ProcessPoolExecutor(
+    max_workers=max(1, (os.cpu_count() or 2)),
+    mp_context=_MP_CTX,
+)
 
 # ----- CLASS DEFINITION ----- #
 class Satellite:
@@ -126,4 +142,16 @@ class Satellite:
         if self.global_model.version > iot.global_model.version:
             self.logger.info(f"  🛰️ SAT {self.sat_id} -> IoT {iot.name}: 글로벌 모델 전송 (버전 {self.global_model.version})")
             await iot.receive_global_model(self.global_model)
-                        
+
+    async def receive_global_model(self, model: PyTorchModel):
+        """지상국으로부터 글로벌 모델을 수신"""
+        self.logger.info(f"  🛰️ SAT {self.sat_id}: 새로운 글로벌 모델 수신 (v{model.version}).")
+        self.global_model = model
+        self.local_model = model
+        self.model_ready_to_upload = False
+
+    async def send_local_model(self) -> PyTorchModel | None:
+        if self.model_ready_to_upload:
+            self.model_ready_to_upload = False
+            return self.local_model
+        return None
